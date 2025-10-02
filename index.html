@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Supabase + Vercel Notes</title>
+  <link rel="preconnect" href="https://rsms.me/" />
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/water.css@2/out/water.css" />
+  <style>
+    .hidden{display:none}
+    .notes{margin-top:1rem}
+    .note{padding:.6rem;border:1px solid #e3e3e3;border-radius:8px;margin:.4rem 0}
+    .row{display:flex;gap:.5rem}
+    .grow{flex:1}
+    .muted{opacity:.7;font-size:.9em}
+    .btn{cursor:pointer}
+  </style>
+</head>
+<body>
+  <h1>Supabase + Vercel: Notes</h1>
+  <p class="muted">Auth with email OTP, then create private notes. Deployed as a single static page on Vercel.</p>
+
+  <section id="auth">
+    <h3>Sign in</h3>
+    <form id="signInForm" class="row">
+      <input class="grow" type="email" id="email" placeholder="you@example.com" required />
+      <button class="btn" type="submit">Send magic link</button>
+    </form>
+    <p id="authMsg" class="muted"></p>
+  </section>
+
+  <section id="app" class="hidden">
+    <div class="row" style="align-items:center;justify-content:space-between">
+      <div>
+        <strong id="userEmail"></strong>
+      </div>
+      <div class="row">
+        <button id="signOut" class="btn">Sign out</button>
+        <button id="refresh" class="btn">Refresh</button>
+      </div>
+    </div>
+
+    <h3>Your notes</h3>
+    <form id="addForm" class="row">
+      <input class="grow" id="noteInput" placeholder="Type a note..." maxlength="280" />
+      <button class="btn" type="submit">Add</button>
+    </form>
+    <div id="notes" class="notes"></div>
+  </section>
+
+  <!-- Supabase JS -->
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script>
+    // 1) Fill these with your project values
+    const SUPABASE_URL = "https://YOUR-PROJECT-REF.supabase.co"; // e.g. https://abcxyzsupabase.supabase.co
+    const SUPABASE_ANON_KEY = "YOUR-ANON-KEY"; // Project Settings → API → anon key
+
+    // 2) Create client
+    const supabase = supabasejs.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+      auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true }
+    });
+
+    const el = (id) => document.getElementById(id);
+
+    // UI refs
+    const authSec = el('auth');
+    const appSec = el('app');
+    const notesDiv = el('notes');
+
+    // Sign in with OTP (magic link)
+    el('signInForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const email = el('email').value.trim();
+      el('authMsg').textContent = 'Sending magic link...';
+      const { error } = await supabase.auth.signInWithOtp({ email });
+      el('authMsg').textContent = error ? `Error: ${error.message}` : 'Check your inbox for the sign in link.';
+    });
+
+    // Sign out
+    el('signOut').addEventListener('click', async () => {
+      await supabase.auth.signOut();
+      render(null);
+    });
+
+    // Add a note
+    el('addForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const content = el('noteInput').value.trim();
+      if (!content) return;
+      el('noteInput').value = '';
+      const { error } = await supabase.from('notes').insert({ content });
+      if (error) alert(error.message);
+      await loadNotes();
+    });
+
+    // Refresh
+    el('refresh').addEventListener('click', loadNotes);
+
+    // Render UI for session
+    function render(session){
+      if (session && session.user){
+        authSec.classList.add('hidden');
+        appSec.classList.remove('hidden');
+        el('userEmail').textContent = session.user.email || 'Signed in';
+        loadNotes();
+      } else {
+        appSec.classList.add('hidden');
+        authSec.classList.remove('hidden');
+        notesDiv.innerHTML = '';
+      }
+    }
+
+    // Load notes for current user
+    async function loadNotes(){
+      const { data, error } = await supabase
+        .from('notes')
+        .select('*')
+        .order('created_at', { ascending: false });
+      if (error){
+        notesDiv.innerHTML = `<p class="muted">${error.message}</p>`;
+        return;
+      }
+      notesDiv.innerHTML = '';
+      data.forEach(row => {
+        const div = document.createElement('div');
+        div.className = 'note';
+        const date = new Date(row.created_at).toLocaleString();
+        div.innerHTML = `
+          <div class="row" style="justify-content:space-between;align-items:center">
+            <div class="grow">${escapeHtml(row.content)}</div>
+            <div class="muted" style="white-space:nowrap">${date}</div>
+          </div>
+          <div class="row" style="margin-top:.4rem">
+            <button class="btn" data-id="${row.id}" data-action="delete">Delete</button>
+          </div>`;
+        notesDiv.appendChild(div);
+      });
+
+      // Delete handlers
+      notesDiv.querySelectorAll('button[data-action="delete"]').forEach(btn => {
+        btn.addEventListener('click', async () => {
+          const id = btn.getAttribute('data-id');
+          const { error } = await supabase.from('notes').delete().eq('id', id);
+          if (error) alert(error.message);
+          await loadNotes();
+        });
+      });
+    }
+
+    // Escape to prevent XSS
+    function escapeHtml(str){
+      return str
+        .replaceAll('&','&amp;')
+        .replaceAll('<','&lt;')
+        .replaceAll('>','&gt;')
+        .replaceAll('"','&quot;')
+        .replaceAll("'",'&#039;');
+    }
+
+    // On load, check session and handle URL hash for OTP
+    (async function init(){
+      const { data: { session } } = await supabase.auth.getSession();
+      render(session);
+      supabase.auth.onAuthStateChange((_event, sess) => render(sess));
+    })();
+  </script>
+</body>
+</html>
